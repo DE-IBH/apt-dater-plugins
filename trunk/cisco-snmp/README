@@ -1,0 +1,6 @@
+This is a generic Cisco SNMP plugin. It is based on the Nagios
+plugin by Frank4DD[1]. Host connections are done by SSH.
+
+
+[1] Monitoring Cisco IOS versions with Nagios
+    http://www.frank4dd.com/howto/nagios/cisco-patch-update-monitoring.htm
