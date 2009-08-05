@@ -1,0 +1,189 @@
+#!/usr/bin/perl -w
+
+# cisco-snmp - apt-dater plugin for Cisco ASA/IOS/PIX devices
+#
+# $Id$
+#
+# Authors:
+#   Andre Ellguth <ellguth@ibh.de>
+#   Thomas Liske <liske@ibh.de>
+#
+# Copyright Holder:
+#   2009 (C) IBH IT-Service GmbH [http://www.ibh.de/apt-dater/]
+#
+# License:
+#   This program is free software; you can redistribute it and/or modify
+#   it under the terms of the GNU General Public License as published by
+#   the Free Software Foundation; either version 2 of the License, or
+#   (at your option) any later version.
+#
+#   This program is distributed in the hope that it will be useful,
+#   but WITHOUT ANY WARRANTY; without even the implied warranty of
+#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#   GNU General Public License for more details.
+#
+#   You should have received a copy of the GNU General Public License
+#   along with this package; if not, write to the Free Software
+#   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301 USA
+#
+
+use strict;
+use Net::SNMP;
+
+my $CFGFILE = "$0.conf";
+my $SNMP_COMMUNITY;
+my $SNMP_VERSION;
+my $SNMP_PORT;
+my $SNMP_TIMEOUT = 5;
+
+eval `cat "$CFGFILE"` if (-r $CFGFILE);
+
+my $hostvar = shift || die "Usage: $0 <host-var> [community-var]\n";
+die "Could not find host environment variable '$hostvar'!\n"
+ unless(defined($ENV{$hostvar}));
+my $host = $ENV{$hostvar};
+
+my $commvar = shift;
+if(defined($commvar)) {
+    die "Could not find community environment variable '$commvar'!\n"
+     unless(defined($ENV{$commvar}));
+
+    $SNMP_COMMUNITY = $ENV{$commvar};
+}
+
+# SNMPv2-MIB::sysDescr.0
+my $sysdesc_oid = ".1.3.6.1.2.1.1.1.0";
+# SNMPv2-SMI::enterprises.9.2.1.73.0
+my $bootimg_oid = ".1.3.6.1.4.1.9.2.1.73.0";
+
+# get sysDescr
+my %options = (-hostname => $host);
+$options{-community} = $SNMP_COMMUNITY if(defined($SNMP_COMMUNITY));
+$options{-version} = $SNMP_VERSION if(defined($SNMP_VERSION));
+$options{-port} = $SNMP_PORT if(defined($SNMP_PORT));
+$options{-timeout} = $SNMP_TIMEOUT if(defined($SNMP_TIMEOUT));
+
+my ($session, $error) = Net::SNMP->session(%options);
+
+die("$error\n") unless(defined($session));
+
+my $response = $session->get_request( -varbindlist => [$sysdesc_oid, $bootimg_oid]);
+
+die($session->error."\n") unless(defined($response));
+
+my $snmpdata = $response->{$sysdesc_oid};
+my $bootimg = $response->{$bootimg_oid};
+$session->close;
+
+# trunk boot image line
+$bootimg =~ s@/.+$@@;
+
+my $version;
+my $platform;
+
+################################################################################
+# Example response for Cisco ASA 5520:
+# "Cisco Adaptive Security Appliance Version 8.0(4)"
+#                                            ^^^^^^
+################################################################################
+if($snmpdata =~ /^Cisco Adaptive Security Appliance.*/) {
+    (my $os, $version) = split('Version ', $snmpdata);
+    $platform = 'asa';
+}
+
+###############################################################################
+# Example response for Cisco PIX 525:
+# "Cisco PIX Firewall Version 6.3(5)"
+# "Cisco Cisco PIX Security Appliance Version 7.2(2)"
+# "Cisco Cisco PIX Security Appliance Version 8.0(2)"
+###############################################################################
+elsif($snmpdata =~ /.* PIX .*/) {
+    (my $os, $version) = split('Version ', $snmpdata);
+    $platform = 'pix';
+}
+
+################################################################################
+# Example response for Cisco Routers, here a from a Cat-6506:
+# Version: Cisco Internetwork Operating System Software
+# IOS (tm) MSFC2 Software (C6MSFC2-JSV-M), Version 12.1(27b)E3, RELEASE SOFTWARE (fc1)
+#                                                  ^^^^^^^^^^^
+# Technical Support: http://www.cisco.com/techsupport
+# Copyright (c) 1986-2007 by cisco Systems, Inc.
+# Compiled Tue 07-Aug-0
+# Example response for Cisco Routers, here a from a Cat-3750:
+# Cisco IOS Software, C3750 Software (C3750-IPBASE-M), Version 12.2(25)SEE2, RELEASE SOFTWARE (fc1)
+#                                                              ^^^^^^^^^^^^
+# Copyright (c) 1986-2006 by Cisco Systems, Inc.
+# Compiled Fri 28-Jul-06 08:46 by yenanh
+################################################################################
+else { 
+  my @lines = split ('\n', $snmpdata);
+  foreach my $line (@lines) {
+    if($line =~ /IOS .*/) { 
+      (my @fields) = split(', ', $line);
+      foreach my $field (@fields) {
+        if($field =~ /Version/) {
+            (my $txt, $version) = split('Version ', $field);
+            $platform = 'ios';
+        }
+      }
+    }
+  }
+}
+
+die "Could not detect Cisco software platform/version!\n"
+ unless(defined($platform));
+
+print "LSBREL: Cisco|$version|",uc($platform),"\n";
+
+open(HVERSIONS, "$0.versions");
+my $output;
+while(my $line = <HVERSIONS>) {
+    # skip comment lines
+    next if($line =~ /^#.*$/);
+    chomp($line);
+
+    (my $required, my $osgroup, my $osversion, my $remarks)=split(/\|/,$line);
+
+    if( ($platform eq $osgroup) && ($version eq $osversion) ) {
+      if($required eq "approved") {
+        my $output = uc($platform)." Version: $version approved";
+        if ($remarks ne "") { $output = $output." | Remarks: ".$remarks." Data: $snmpdata\n"; }
+        else { $output = $output." | $snmpdata\n"; }
+        printf $output;
+	print "KERNELINFO: 0 $bootimg\n";
+        exit;
+      }
+
+      if($required eq "obsolete") {
+        my $output = uc($platform)." Version: $version obsolete";
+        if ($remarks ne "") { $output = $output." | Remarks: ".$remarks." Data: $snmpdata\n"; }
+        else { $output = $output." | $snmpdata\n"; }
+        printf $output;
+	print "KERNELINFO: 1 $bootimg\n";
+        exit;
+      }
+
+      if($required eq "med-vuln") {
+        my $output = uc($platform)." Version: $version vulnerable (low-medium)";
+        if ($remarks ne "") { $output = $output." | Remarks: ".$remarks." Data: $snmpdata\n"; }
+        else { $output = $output." | $snmpdata\n"; }
+        printf $output;
+	print "KERNELINFO: 1 $bootimg\n";
+        exit;
+      }
+
+      if($required eq "crit-vuln") {
+        my $output = uc($platform)." Version: $version vulnerable (high risk)";
+        if ($remarks ne "") { $output = $output." | Remarks: ".$remarks." Data: $snmpdata\n"; }
+        else { $output = $output." | $snmpdata\n"; }
+        printf $output;
+	print "KERNELINFO: 1 $bootimg\n";
+        exit;
+      }
+    }
+}
+
+# the OS version is not listed, we don't know exactly if its good or bad.
+print "KERNELINFO: 9 $bootimg\n";
+printf (uc($platform)." Version: $version unverified | $snmpdata\n");

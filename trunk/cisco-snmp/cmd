@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# apt-dater - terminal-based remote package update manager
+# cisco-snmp - apt-dater plugin for Cisco ASA/IOS/PIX devices
 #
 # $Id$
 #
@@ -39,7 +39,7 @@ case "$AD_ACTION" in
 	echo "ADPROTO: 0.3"
 	echo "VIRT: Physical"
 	echo "FORDBID: 6"
-	echo "KERNEL: 0 $IMAGE"
+	`dirname "$0"`"/check_snmp" AD_HOSTNAME
 	;;
     *)
 	echo "Unhandled action '$AD_ACTION'!" 1>&2
